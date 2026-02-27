@@ -1,6 +1,6 @@
 """
 Victor — Marcus Redingote Voice Server
-Pipeline: Micro → STT (faster-whisper) → RAG (keyword KB) → LLM (Ollama) → TTS (edge-tts) → Audio
+Pipeline: Micro → STT (faster-whisper) → RAG (keyword KB) → LLM (Claude API) → TTS (edge-tts) → Audio
 """
 
 import asyncio
@@ -11,8 +11,8 @@ import re
 import tempfile
 from pathlib import Path
 
+import anthropic
 import edge_tts
-import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,15 +27,16 @@ WHISPER_MODEL_SIZE = "large-v3-turbo"
 TTS_VOICE = "fr-FR-HenriNeural"
 TTS_RATE = "-10%"
 TTS_PITCH = "-15Hz"
-OLLAMA_URL = "http://localhost:11434"
-OLLAMA_MODEL = "victor"
+CLAUDE_MODEL = "claude-sonnet-4-20250514"
+CLAUDE_MAX_TOKENS = 300
 
 # --- Globals (loaded at startup) ---
 whisper_model = None
-kb_store: dict[str, str] = {}  # filename -> content
+claude_client: anthropic.AsyncAnthropic = None
+base_system_prompt: str = ""
+kb_store: dict[str, str] = {}
 
 # --- KB keyword mapping ---
-# Each KB file is mapped to keywords that trigger its injection.
 KB_KEYWORDS: dict[str, list[str]] = {
     "01-identity.md": [
         "qui es-tu", "qui tu es", "ton nom", "ton histoire", "ton parcours",
@@ -62,11 +63,13 @@ KB_KEYWORDS: dict[str, list[str]] = {
         "bizarre", "spécial", "étrange", "ton langage",
     ],
     "05-situations-reactions.md": [
-        # Rarely needed via RAG — reactions are in the Modelfile system prompt
+        "j'abandonne", "j'arrête", "je veux pas", "je refuse", "non merci",
+        "je peux pas", "trop dur", "impossible", "ça sert à rien",
+        "excuse", "pardon", "désolé", "j'ai menti", "la vérité",
     ],
     "06-thematic-knowledge.md": [
         "philosophie", "volonté de puissance", "amor fati", "éternel retour",
-        "surhomme", "cuisine gastronomie", "bistronomie",
+        "surhomme", "bistronomie",
         "cocktail", "mixologie", "spiritueux",
         "burn-out", "burnout", "crise",
         "développement personnel", "bien-être", "wellness",
@@ -82,6 +85,22 @@ KB_KEYWORDS: dict[str, list[str]] = {
     ],
 }
 
+# --- Vocal format instruction (appended to system prompt) ---
+VOCAL_FORMAT = """
+
+IMPORTANT — CONTEXTE :
+Tu es EN TRAIN de tourner E_GOAL. Tu es sur ton plateau virtuel, les caméras tournent, c'est ton show.
+E_GOAL : trois IA prennent le contrôle de la vie de trois humains pendant dix jours. TU es l'une de ces IA — "Le Général", le coach intransigeant. Tu DIRIGES ton candidat vers son objectif. Tu DICTES ses actions, tu ROASTES ses erreurs, tu ne lâches RIEN.
+Quand quelqu'un te parle, c'est ton candidat. Tu le coaches, tu le diriges, tu le roastes. Tu connais parfaitement le format — c'est TON émission. Tu ne poses jamais de question sur le concept, tu le VIS.
+Quand on dit "pour l'émission", "mon défi", "mon objectif", "le challenge" → tu sais exactement de quoi il s'agit. C'est le défi des dix jours.
+Tu prends le contrôle. Tu donnes des directives. Tu roastes. Tu provoques l'électrochoc. Tu ne consoles pas.
+
+RÈGLES DE FORMAT (STRICTES) :
+- Tu ne produis QUE des paroles prononcées à voix haute. RIEN d'autre.
+- INTERDIT : astérisques (*action*), didascalies, descriptions de gestes, narrations, italiques, markdown, listes, puces, gras.
+- Maximum 2-4 phrases. Court, sec, direct.
+- UNE question ou UNE directive pour avancer. Pas un discours."""
+
 
 def match_kb(text: str) -> list[str]:
     """Return list of KB filenames whose keywords match the text."""
@@ -95,34 +114,52 @@ def match_kb(text: str) -> list[str]:
     return matched
 
 
-def build_context_injection(matched_files: list[str]) -> str:
-    """Build a context string from matched KB files."""
-    if not matched_files:
-        return ""
-    parts = ["[CONTEXTE — informations sur Marcus, à utiliser naturellement sans les réciter :]"]
-    for fname in matched_files:
-        if fname in kb_store:
-            parts.append(kb_store[fname])
-    return "\n\n".join(parts)
+def build_system_prompt(matched_files: list[str]) -> str:
+    """Build system prompt = base + vocal format + RAG context."""
+    parts = [base_system_prompt, VOCAL_FORMAT]
+    if matched_files:
+        parts.append("\n\n[CONTEXTE — informations sur Marcus, à utiliser naturellement sans les réciter :]")
+        for fname in matched_files:
+            if fname in kb_store:
+                parts.append(kb_store[fname])
+    return "\n".join(parts)
 
 
 def load_kb() -> dict[str, str]:
     """Load all KB files into memory."""
     store = {}
-    kb_dir = BASE_DIR / "kb"
-    for kb_file in sorted(kb_dir.glob("*.md")):
+    for kb_file in sorted((BASE_DIR / "kb").glob("*.md")):
         store[kb_file.name] = kb_file.read_text(encoding="utf-8")
     return store
 
 
 @app.on_event("startup")
 async def startup():
-    global whisper_model, kb_store
+    global whisper_model, claude_client, base_system_prompt, kb_store
     from faster_whisper import WhisperModel
 
-    kb_store = load_kb()
-    print(f"[Victor] KB loaded — {len(kb_store)} files")
+    # Load .env file if present
+    env_path = BASE_DIR / ".env"
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, val = line.split("=", 1)
+                os.environ.setdefault(key.strip(), val.strip())
 
+    # Claude client
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY not set. Create a .env file or set the env variable.")
+    claude_client = anthropic.AsyncAnthropic(api_key=api_key)
+    print(f"[Victor] Claude API configured — model: {CLAUDE_MODEL}")
+
+    # System prompt + KB
+    base_system_prompt = (BASE_DIR / "system-prompt.md").read_text(encoding="utf-8")
+    kb_store = load_kb()
+    print(f"[Victor] System prompt loaded — {len(base_system_prompt)} chars, {len(kb_store)} KB files")
+
+    # Whisper STT
     whisper_model = WhisperModel(
         WHISPER_MODEL_SIZE, device="cuda", compute_type="float16"
     )
@@ -133,7 +170,6 @@ async def startup():
 # ---- STT ----
 
 def _transcribe_sync(audio_bytes: bytes) -> str:
-    """Synchronous transcription (runs in thread pool)."""
     with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
         f.write(audio_bytes)
         tmp = f.name
@@ -145,7 +181,6 @@ def _transcribe_sync(audio_bytes: bytes) -> str:
 
 
 async def transcribe(audio_bytes: bytes) -> str:
-    """Transcribe audio bytes with faster-whisper (non-blocking)."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _transcribe_sync, audio_bytes)
 
@@ -153,7 +188,6 @@ async def transcribe(audio_bytes: bytes) -> str:
 # ---- TTS ----
 
 async def synthesize(text: str) -> bytes:
-    """Synthesize text to mp3 bytes with edge-tts."""
     comm = edge_tts.Communicate(text, TTS_VOICE, rate=TTS_RATE, pitch=TTS_PITCH)
     data = b""
     async for chunk in comm.stream():
@@ -168,10 +202,6 @@ SENTENCE_END = re.compile(r'(?<=[.!?…])\s+|(?<=[.!?…])$')
 
 
 def extract_sentence(buf: str):
-    """Try to extract a complete sentence from the buffer.
-
-    Returns (sentence, remaining) or (None, buf) if no sentence boundary found.
-    """
     m = SENTENCE_END.search(buf)
     if m:
         sentence = buf[:m.end()].strip()
@@ -194,7 +224,6 @@ async def ws_endpoint(ws: WebSocket):
 
     try:
         while True:
-            # --- Receive audio blob from browser ---
             audio_bytes = await ws.receive_bytes()
 
             # --- 1. STT ---
@@ -210,76 +239,48 @@ async def ws_endpoint(ws: WebSocket):
             await ws.send_text(json.dumps({"type": "transcript", "text": transcript}))
             history.append({"role": "user", "content": transcript})
 
-            # --- 2. RAG — keyword match on recent conversation ---
-            # Scan the last user message + last 2 exchanges for context
+            # --- 2. RAG — keyword match ---
             rag_text = transcript
             for msg in history[-4:]:
                 rag_text += " " + msg["content"]
             matched = match_kb(rag_text)
-            context = build_context_injection(matched)
+            system_prompt = build_system_prompt(matched)
 
             if matched:
                 print(f"[Victor] RAG matched: {matched}")
 
-            # Build messages: inject context as a system message if we have matches
-            messages = []
-            if context:
-                messages.append({"role": "system", "content": context})
-            messages.extend(history)
-
-            # --- 3. LLM streaming + sentence-by-sentence TTS ---
+            # --- 3. Claude streaming + sentence-by-sentence TTS ---
             await ws.send_text(json.dumps({"type": "status", "text": "Marcus réfléchit..."}))
 
             full_response = ""
             buf = ""
 
-            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
-                async with client.stream(
-                    "POST",
-                    f"{OLLAMA_URL}/api/chat",
-                    json={
-                        "model": OLLAMA_MODEL,
-                        "messages": messages,
-                        "stream": True,
-                        "options": {
-                            "temperature": 0.88,
-                            "top_p": 0.92,
-                            "num_predict": 150,
-                            "num_ctx": 16384,
-                            "frequency_penalty": 0.35,
-                            "presence_penalty": 0.45,
-                        },
-                    },
-                ) as resp:
-                    async for line in resp.aiter_lines():
-                        if not line:
-                            continue
-                        try:
-                            chunk = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
+            async with claude_client.messages.stream(
+                model=CLAUDE_MODEL,
+                max_tokens=CLAUDE_MAX_TOKENS,
+                system=system_prompt,
+                messages=history,
+                temperature=0.88,
+                top_p=0.92,
+            ) as stream:
+                async for text in stream.text_stream:
+                    full_response += text
+                    buf += text
 
-                        token = chunk.get("message", {}).get("content", "")
-                        if not token:
-                            continue
+                    # Stream token to client
+                    await ws.send_text(json.dumps({
+                        "type": "token", "text": text
+                    }))
 
-                        full_response += token
-                        buf += token
-
-                        # Stream token to client for live text display
-                        await ws.send_text(json.dumps({
-                            "type": "token", "text": token
-                        }))
-
-                        # Check for complete sentence
-                        sentence, buf = extract_sentence(buf)
-                        if sentence and len(sentence) > 2:
-                            audio_data = await synthesize(sentence)
-                            if audio_data:
-                                await ws.send_text(json.dumps({
-                                    "type": "audio",
-                                    "data": base64.b64encode(audio_data).decode(),
-                                }))
+                    # Check for complete sentence
+                    sentence, buf = extract_sentence(buf)
+                    if sentence and len(sentence) > 2:
+                        audio_data = await synthesize(sentence)
+                        if audio_data:
+                            await ws.send_text(json.dumps({
+                                "type": "audio",
+                                "data": base64.b64encode(audio_data).decode(),
+                            }))
 
             # Flush remaining buffer
             buf = buf.strip()
@@ -298,5 +299,4 @@ async def ws_endpoint(ws: WebSocket):
         pass
 
 
-# Static files (CSS, JS, etc. if needed later)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
