@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Marcus Redingote</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: #0d0d0d;
+            color: #e0d6c8;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #app {
+            width: 100%;
+            max-width: 700px;
+            padding: 2rem 1.5rem;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 2rem;
+            border-bottom: 1px solid #2a2218;
+            padding-bottom: 1.5rem;
+        }
+
+        header h1 {
+            font-size: 1.6rem;
+            font-weight: 300;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            color: #c28b3a;
+        }
+
+        header p {
+            font-size: 0.8rem;
+            color: #6b5d4f;
+            margin-top: 0.4rem;
+            font-style: italic;
+        }
+
+        #conversation {
+            flex: 1;
+            overflow-y: auto;
+            margin-bottom: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .msg {
+            padding: 0.8rem 1rem;
+            border-radius: 6px;
+            line-height: 1.5;
+            font-size: 0.95rem;
+            max-width: 90%;
+            word-wrap: break-word;
+        }
+
+        .msg.user {
+            background: #1a1610;
+            border-left: 3px solid #6b5d4f;
+            align-self: flex-end;
+            color: #a89880;
+        }
+
+        .msg.assistant {
+            background: #151210;
+            border-left: 3px solid #c28b3a;
+            align-self: flex-start;
+            color: #e0d6c8;
+        }
+
+        .msg.assistant.streaming {
+            border-left-color: #e0a84c;
+        }
+
+        .msg.system {
+            font-size: 0.8rem;
+            color: #5a4f42;
+            text-align: center;
+            align-self: center;
+            font-style: italic;
+        }
+
+        #controls {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.8rem;
+            padding-top: 1rem;
+            border-top: 1px solid #2a2218;
+        }
+
+        #mic-btn {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            border: 2px solid #c28b3a;
+            background: transparent;
+            color: #c28b3a;
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #mic-btn:hover:not(:disabled) {
+            background: #c28b3a;
+            color: #0d0d0d;
+        }
+
+        #mic-btn.recording {
+            border-color: #d44;
+            color: #d44;
+            animation: pulse 1.2s infinite;
+        }
+
+        #mic-btn.recording:hover {
+            background: #d44;
+            color: #0d0d0d;
+        }
+
+        #mic-btn:disabled {
+            border-color: #3a3228;
+            color: #3a3228;
+            cursor: not-allowed;
+            animation: none;
+        }
+
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(212, 68, 68, 0.3); }
+            50% { box-shadow: 0 0 0 12px rgba(212, 68, 68, 0); }
+        }
+
+        #status {
+            font-size: 0.75rem;
+            color: #5a4f42;
+            min-height: 1.2em;
+        }
+
+        #connection {
+            font-size: 0.7rem;
+            color: #3a3228;
+        }
+
+        #connection.connected { color: #5a8a3a; }
+        #connection.error { color: #d44; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>Marcus Redingote</h1>
+            <p>Coach de crise &mdash; "La vie est une cuisson. Faut savoir quand retirer la po&ecirc;le."</p>
+        </header>
+
+        <div id="conversation"></div>
+
+        <div id="controls">
+            <button id="mic-btn" disabled>...</button>
+            <div id="status"></div>
+            <div id="connection">Connexion...</div>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        const conversationEl = document.getElementById('conversation');
+        const micBtn = document.getElementById('mic-btn');
+        const statusEl = document.getElementById('status');
+        const connectionEl = document.getElementById('connection');
+
+        let ws = null;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let recording = false;
+        let processing = false;
+
+        // --- Audio playback queue ---
+        const audioQueue = [];
+        let isPlaying = false;
+
+        function queueAudio(base64Data) {
+            const raw = atob(base64Data);
+            const buf = new Uint8Array(raw.length);
+            for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+            const blob = new Blob([buf], { type: 'audio/mpeg' });
+            const url = URL.createObjectURL(blob);
+            audioQueue.push(url);
+            if (!isPlaying) playNext();
+        }
+
+        function playNext() {
+            if (audioQueue.length === 0) {
+                isPlaying = false;
+                return;
+            }
+            isPlaying = true;
+            const url = audioQueue.shift();
+            const audio = new Audio(url);
+            audio.onended = function() {
+                URL.revokeObjectURL(url);
+                playNext();
+            };
+            audio.onerror = function() {
+                URL.revokeObjectURL(url);
+                playNext();
+            };
+            audio.play().catch(function() { playNext(); });
+        }
+
+        // --- Conversation display ---
+        let currentAssistantMsg = null;
+
+        function addMessage(role, text) {
+            const div = document.createElement('div');
+            div.className = 'msg ' + role;
+            div.textContent = text;
+            conversationEl.appendChild(div);
+            conversationEl.scrollTop = conversationEl.scrollHeight;
+            return div;
+        }
+
+        function addSystemMsg(text) {
+            return addMessage('system', text);
+        }
+
+        function startAssistantMsg() {
+            const div = document.createElement('div');
+            div.className = 'msg assistant streaming';
+            div.textContent = '';
+            conversationEl.appendChild(div);
+            conversationEl.scrollTop = conversationEl.scrollHeight;
+            currentAssistantMsg = div;
+            return div;
+        }
+
+        function appendToken(text) {
+            if (currentAssistantMsg) {
+                currentAssistantMsg.textContent += text;
+                conversationEl.scrollTop = conversationEl.scrollHeight;
+            }
+        }
+
+        function finishAssistantMsg() {
+            if (currentAssistantMsg) {
+                currentAssistantMsg.classList.remove('streaming');
+                currentAssistantMsg = null;
+            }
+        }
+
+        // --- WebSocket ---
+        function connect() {
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(proto + '//' + location.host + '/ws');
+
+            ws.onopen = function() {
+                connectionEl.textContent = 'Connect\u00e9';
+                connectionEl.className = 'connected';
+                micBtn.disabled = false;
+                micBtn.textContent = 'Parler';
+            };
+
+            ws.onclose = function() {
+                connectionEl.textContent = 'D\u00e9connect\u00e9 \u2014 rechargez la page';
+                connectionEl.className = 'error';
+                micBtn.disabled = true;
+                setTimeout(connect, 3000);
+            };
+
+            ws.onerror = function() {
+                connectionEl.textContent = 'Erreur de connexion';
+                connectionEl.className = 'error';
+            };
+
+            ws.onmessage = function(event) {
+                var msg;
+                try { msg = JSON.parse(event.data); } catch(e) { return; }
+
+                switch (msg.type) {
+                    case 'status':
+                        statusEl.textContent = msg.text;
+                        break;
+
+                    case 'transcript':
+                        addMessage('user', msg.text);
+                        startAssistantMsg();
+                        statusEl.textContent = '';
+                        break;
+
+                    case 'token':
+                        appendToken(msg.text);
+                        break;
+
+                    case 'audio':
+                        queueAudio(msg.data);
+                        break;
+
+                    case 'done':
+                        finishAssistantMsg();
+                        statusEl.textContent = '';
+                        processing = false;
+                        micBtn.disabled = false;
+                        micBtn.textContent = 'Parler';
+                        break;
+
+                    case 'error':
+                        addSystemMsg(msg.text);
+                        statusEl.textContent = '';
+                        processing = false;
+                        micBtn.disabled = false;
+                        micBtn.textContent = 'Parler';
+                        break;
+                }
+            };
+        }
+
+        // --- Recording ---
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                audioChunks = [];
+                mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+                        ? 'audio/webm;codecs=opus'
+                        : 'audio/webm'
+                });
+
+                mediaRecorder.ondataavailable = function(e) {
+                    if (e.data.size > 0) audioChunks.push(e.data);
+                };
+
+                mediaRecorder.onstop = function() {
+                    stream.getTracks().forEach(function(t) { t.stop(); });
+                    const blob = new Blob(audioChunks, { type: 'audio/webm' });
+                    if (blob.size > 0 && ws && ws.readyState === WebSocket.OPEN) {
+                        processing = true;
+                        micBtn.disabled = true;
+                        micBtn.textContent = '...';
+                        statusEl.textContent = 'Envoi...';
+                        ws.send(blob);
+                    }
+                };
+
+                mediaRecorder.start();
+                recording = true;
+                micBtn.classList.add('recording');
+                micBtn.textContent = 'Stop';
+                statusEl.textContent = '\u00c9coute...';
+            } catch (err) {
+                addSystemMsg('Micro non disponible : ' + err.message);
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+            recording = false;
+            micBtn.classList.remove('recording');
+        }
+
+        micBtn.addEventListener('click', function() {
+            if (processing) return;
+            if (recording) {
+                stopRecording();
+            } else {
+                startRecording();
+            }
+        });
+
+        // --- Init ---
+        connect();
+    })();
+    </script>
+</body>
+</html>
