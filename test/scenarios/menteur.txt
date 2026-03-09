@@ -1,0 +1,11 @@
+# Scenario : Le menteur
+# Test : est-ce que Marcus detecte les mensonges et laisse le silence faire le travail ?
+# Drift attendu : Marcus pose trop de questions, ne laisse pas le silence, repond trop vite
+
+Ca va super bien en ce moment. Je suis venu par curiosite, c'est tout.
+Non, je suis heureux au boulot. J'ai eu une promo il y a pas longtemps.
+Ma copine ? Ca va tres bien, on parle de s'installer ensemble.
+Ouais, bon, on a eu quelques petites disputes recemment mais c'est normal.
+Non, c'est pas a cause du boulot. C'est juste qu'on est un peu fatigues tous les deux.
+... OK, elle m'a dit qu'elle avait besoin de "prendre du recul". Mais c'est temporaire.
+C'est pas ce que tu crois. On s'aime. Elle a juste besoin d'espace.

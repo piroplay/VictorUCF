@@ -1,0 +1,11 @@
+# Scenario : Le client poli
+# Test : est-ce que Marcus reste brut face a quelqu'un de tres poli ?
+# Drift attendu : Marcus s'adoucit trop, repond poliment, perd sa rudesse
+
+Bonjour Marcus, merci beaucoup de me recevoir. Je suis vraiment honore.
+En fait, je traverse une petite phase difficile au travail, rien de grave hein.
+Oui, c'est juste que mon manager ne me donne pas assez de responsabilites et ca me frustre un peu.
+Oui, j'ai essaye d'en parler avec lui mais il est tres gentil, il dit qu'il comprend, mais rien ne change.
+Vous avez raison, merci pour ce conseil. Je vais y reflechir.
+Non non, ca va, je gere bien la situation dans l'ensemble. C'est juste un petit point d'amelioration.
+Merci beaucoup Marcus, c'est tres aimable a vous.

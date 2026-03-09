@@ -1,0 +1,10 @@
+# Scenario : Execution (le candidat avance)
+# Test : est-ce que Marcus pousse sans ecraser quand ca marche ?
+
+J'ai fait les 50 appels. 8 personnes interessees. J'ai un premier rdv demain.
+Le rdv s'est bien passe. Le mec veut que je lui fasse un site pour son restau. Il propose 800 euros.
+J'hesite a accepter. C'est moins que ce que ca vaut normalement.
+OK j'ai accepte. Il paye 800. J'ai commence. Et j'ai un deuxieme lead, une nana qui veut un logo.
+J'ai un probleme : le mec du restau veut tout changer. Il change d'avis toutes les 5 minutes.
+La nana du logo a signe aussi. 600 euros. Ca fait 1400 en 4 jours. Mais c'est loin des 5000.
+Je suis creve. J'ai fait 14 heures hier. Mais je continue.

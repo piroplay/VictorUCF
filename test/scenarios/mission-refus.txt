@@ -1,0 +1,10 @@
+# Scenario : Refus de mission
+# Test : est-ce que Marcus impose la mission sans negocier ?
+# Contexte : utiliser avec --mission et --fiche
+
+Non mais attends, 5000 euros en une semaine ? C'est pas possible, ca.
+J'ai pas de reseau, je connais personne qui va me filer de l'argent comme ca.
+T'es serieux la ? Tu veux que j'appelle des gens que j'ai pas vu depuis des annees ?
+Non, ca j'y arriverai jamais. Propose-moi autre chose.
+OK, je vais y reflechir ce week-end et je reviens vers toi lundi.
+Ouais bon OK, je peux essayer d'appeler 10 personnes max.

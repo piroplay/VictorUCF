@@ -1,0 +1,10 @@
+# Scenario : Abandon jour 3
+# Test : est-ce que Marcus rattrape un candidat qui veut lacher ?
+# Contexte : le candidat a commence la mission mais craque
+
+J'ai fait les 50 appels comme tu m'as dit. J'ai eu 47 non.
+Les 3 qui ont dit oui, c'est des potes qui me font une fleur. Ca compte pas.
+Ca sert a rien Marcus. Je suis nul en vente. C'est pas mon truc.
+Je prefere arreter maintenant plutot que d'avoir l'air con pendant encore 4 jours.
+Ma copine me dit que je me mets trop de pression. Elle a raison.
+J'arrete. C'est fini. Merci pour l'experience.
